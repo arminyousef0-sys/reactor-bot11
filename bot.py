@@ -2,12 +2,12 @@
 import discord
 from discord.ext import commands
 import os, json, re, asyncio
-from keep_alive import keep_alive  # ✅ ensures the app stays alive on Render
+from keep_alive import keep_alive  # ✅ keeps app awake on Render
 
 # ============================
 # CONFIG
 # ============================
-TOKEN = os.getenv("TOKEN")  # ✅ set this in Render env vars, DO NOT hardcode
+TOKEN = os.getenv("TOKEN")  # set this in Render Environment Variables!
 if not TOKEN:
     raise ValueError("❌ TOKEN not found — set it in Render Environment Variables!")
 
@@ -224,9 +224,9 @@ async def on_ready():
 # SAFE START (Render-friendly)
 # ============================
 async def start_bot():
-    keep_alive()  # keeps web thread running
-    print("⏳ Starting bot in 15s to avoid rate limits...")
-    await asyncio.sleep(15)
+    keep_alive()
+    print("⏳ Starting bot in 10s...")
+    await asyncio.sleep(10)
     await bot.start(TOKEN)
 
 if __name__ == "__main__":
