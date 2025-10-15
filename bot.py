@@ -1,28 +1,26 @@
-# bot.py - FIXED: Currency System (K, M, B, T, Qa, Qi, Sx, Sp, Oc)
+# bot.py — Render-stable + Currency/Ticket System
 import discord
-from discord import app_commands
 from discord.ext import commands
-import os
-import json
-import re
+import os, json, re, asyncio
+from keep_alive import keep_alive  # ✅ ensures the app stays alive on Render
 
 # ============================
 # CONFIG
 # ============================
-TOKEN = ""  # ⚠️ Replace this, never share your real token!
+TOKEN = os.getenv("TOKEN")  # ✅ set this in Render env vars, DO NOT hardcode
+if not TOKEN:
+    raise ValueError("❌ TOKEN not found — set it in Render Environment Variables!")
+
 GUILD_ID = 1427269750576124007
 OWNER_ID = 1184517618749669510
 TICKET_CATEGORY_NAME = "tickets"
 PANEL_FILE = "data.json"
 STATUS_CHANNEL_ID = 1427304360484012053
 
-ADMIN_ROLE_IDS = {
-    1427270463305945172,  # Owner role
-    1427294002662736046,
-}
+ADMIN_ROLE_IDS = {1427270463305945172, 1427294002662736046}
 
 # ============================
-# Persistence
+# DATA
 # ============================
 def ensure_data():
     if not os.path.exists(PANEL_FILE):
@@ -32,7 +30,7 @@ def ensure_data():
             "usernames": {},
             "links": {},
             "invites": {},
-            "panel": None
+            "panel": None,
         }
         with open(PANEL_FILE, "w") as f:
             json.dump(base, f, indent=2)
@@ -47,11 +45,13 @@ def save_data():
 data = ensure_data()
 
 # ============================
-# Bot setup
+# BOT SETUP
 # ============================
 intents = discord.Intents.default()
-intents.members = True
 intents.guilds = True
+intents.members = True
+intents.message_content = True
+
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 
@@ -59,7 +59,7 @@ def is_admin(user: discord.Member):
     return user.id == OWNER_ID or any(r.id in ADMIN_ROLE_IDS for r in user.roles)
 
 # ============================
-# Currency Helpers
+# BALANCE FORMAT
 # ============================
 suffixes = [
     (1e27, "Oc"), (1e24, "Sp"), (1e21, "Sx"), (1e18, "Qi"),
@@ -67,7 +67,6 @@ suffixes = [
 ]
 
 def format_balance(amount: float) -> str:
-    """Formats large numbers with suffixes (K, M, B, T, Qa, Qi, Sx, Sp, Oc)."""
     for value, suffix in suffixes:
         if amount >= value:
             formatted = f"{amount / value:.2f}".rstrip("0").rstrip(".")
@@ -75,34 +74,23 @@ def format_balance(amount: float) -> str:
     return str(int(amount))
 
 def parse_amount(input_str: str) -> float:
-    """Parses input like 1k, 1M, 1Qa into actual numbers."""
     input_str = input_str.strip().lower()
     match = re.match(r"^([\d,.]+)\s*([a-z]*)$", input_str)
     if not match:
-        raise ValueError("Invalid amount format.")
+        raise ValueError("Invalid format")
     num, suffix = match.groups()
     num = float(num.replace(",", ""))
-    suffix = suffix.lower()
-
-    suffix_map = {
-        "k": 1e3,
-        "m": 1e6,
-        "b": 1e9,
-        "t": 1e12,
-        "qa": 1e15,
-        "qi": 1e18,
-        "sx": 1e21,
-        "sp": 1e24,
-        "oc": 1e27
-    }
-    if suffix in suffix_map:
-        num *= suffix_map[suffix]
-    return num
+    mult = {
+        "k": 1e3, "m": 1e6, "b": 1e9, "t": 1e12,
+        "qa": 1e15, "qi": 1e18, "sx": 1e21,
+        "sp": 1e24, "oc": 1e27
+    }.get(suffix, 1)
+    return num * mult
 
 # ============================
-# Panel / Tickets / Misc
+# PANEL + TICKETS
 # ============================
-async def update_panel_status(status_text: str):
+async def update_panel_status(text: str):
     panel = data.get("panel")
     if not panel:
         return
@@ -117,12 +105,12 @@ async def update_panel_status(status_text: str):
         if msg.embeds:
             embed = msg.embeds[0]
             if embed.fields:
-                embed.set_field_at(0, name="Bot Status", value=status_text, inline=False)
+                embed.set_field_at(0, name="Bot Status", value=text, inline=False)
             else:
-                embed.add_field(name="Bot Status", value=status_text, inline=False)
+                embed.add_field(name="Bot Status", value=text, inline=False)
             await msg.edit(embed=embed, view=TicketView())
-    except:
-        pass
+    except Exception as e:
+        print(f"⚠️ update_panel_status error: {e}")
 
 class HandleTicketView(discord.ui.View):
     def __init__(self):
@@ -131,7 +119,7 @@ class HandleTicketView(discord.ui.View):
     @discord.ui.button(label="🔧 Handle Ticket", style=discord.ButtonStyle.primary, custom_id="handle_ticket_btn")
     async def handle_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
-        await interaction.channel.send(f"✅ {interaction.user.mention} is now handling this ticket.")
+        await interaction.channel.send(f"✅ {interaction.user.mention} is handling this ticket.")
 
 class TicketView(discord.ui.View):
     def __init__(self):
@@ -141,7 +129,7 @@ class TicketView(discord.ui.View):
     async def create_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         data["ticket_counter"] += 1
-        ticket_number = str(data["ticket_counter"]).zfill(3)
+        ticket_num = str(data["ticket_counter"]).zfill(3)
 
         category = discord.utils.get(interaction.guild.categories, name=TICKET_CATEGORY_NAME)
         if not category:
@@ -153,41 +141,39 @@ class TicketView(discord.ui.View):
             interaction.guild.me: discord.PermissionOverwrite(view_channel=True),
         }
         channel = await interaction.guild.create_text_channel(
-            name=f"ticket-{ticket_number}", overwrites=overwrites, category=category
+            name=f"ticket-{ticket_num}", overwrites=overwrites, category=category
         )
 
         invites = data["invites"].get(str(interaction.user.id), 0)
-        balance = data["balances"].get(str(interaction.user.id), 0)
+        bal = data["balances"].get(str(interaction.user.id), 0)
 
         embed = discord.Embed(
-            title=f"🎫 Ticket #{ticket_number}",
+            title=f"🎫 Ticket #{ticket_num}",
             description=f"{interaction.user.mention} created this ticket.",
-            color=discord.Color.blurple()
+            color=discord.Color.blurple(),
         )
-        embed.add_field(name="📩 Invites", value=f"{invites}", inline=False)
-        embed.add_field(name="💰 Balance", value=format_balance(balance), inline=False)
+        embed.add_field(name="📩 Invites", value=str(invites), inline=False)
+        embed.add_field(name="💰 Balance", value=format_balance(bal), inline=False)
 
         await channel.send(embed=embed, view=HandleTicketView())
         save_data()
         await interaction.followup.send(f"✅ Ticket created: {channel.mention}", ephemeral=True)
 
 # ============================
-# Slash commands
+# SLASH COMMANDS
 # ============================
 @tree.command(name="tickets_show", description="Show ticket panel", guild=discord.Object(id=GUILD_ID))
 async def tickets_show(interaction: discord.Interaction):
     if not is_admin(interaction.user):
-        return await interaction.response.send_message("❌ No permission.", ephemeral=True)
-    embed = discord.Embed(title="🎟️ Ticket Panel",
-                          description="Click the button to create a ticket.",
-                          color=discord.Color.blue())
+        return await interaction.response.send_message("❌ No permission", ephemeral=True)
+    embed = discord.Embed(title="🎟️ Ticket Panel", description="Click to make a ticket!", color=discord.Color.blue())
     embed.add_field(name="Bot Status", value="🟢 Online", inline=False)
     msg = await interaction.channel.send(embed=embed, view=TicketView())
     data["panel"] = {"guild": interaction.guild.id, "channel": interaction.channel.id, "message": msg.id}
     save_data()
-    await interaction.response.send_message("✅ Panel created.", ephemeral=True)
+    await interaction.response.send_message("✅ Panel created!", ephemeral=True)
 
-@tree.command(name="balance", description="Check balance", guild=discord.Object(id=GUILD_ID))
+@tree.command(name="balance", description="Check your balance", guild=discord.Object(id=GUILD_ID))
 async def balance(interaction: discord.Interaction, member: discord.Member = None):
     member = member or interaction.user
     bal = data["balances"].get(str(member.id), 0)
@@ -196,69 +182,35 @@ async def balance(interaction: discord.Interaction, member: discord.Member = Non
 @tree.command(name="add_balance", description="Add balance", guild=discord.Object(id=GUILD_ID))
 async def add_balance(interaction: discord.Interaction, member: discord.Member, amount: str):
     if not is_admin(interaction.user):
-        return await interaction.response.send_message("❌ No permission.", ephemeral=True)
+        return await interaction.response.send_message("❌ No permission", ephemeral=True)
     try:
-        amount_num = parse_amount(amount)
-    except Exception:
-        return await interaction.response.send_message("❌ Invalid amount format. Try `1K`, `1M`, `1Qa`, etc.", ephemeral=True)
-
-    data["balances"][str(member.id)] = data["balances"].get(str(member.id), 0) + amount_num
+        amt = parse_amount(amount)
+    except:
+        return await interaction.response.send_message("❌ Invalid amount (use 1K, 1M, 1Qa...)", ephemeral=True)
+    data["balances"][str(member.id)] = data["balances"].get(str(member.id), 0) + amt
     save_data()
-    await interaction.response.send_message(f"✅ Added {format_balance(amount_num)} to {member.mention}")
+    await interaction.response.send_message(f"✅ Added {format_balance(amt)} to {member.mention}")
 
 @tree.command(name="remove_balance", description="Remove balance", guild=discord.Object(id=GUILD_ID))
 async def remove_balance(interaction: discord.Interaction, member: discord.Member, amount: str):
     if not is_admin(interaction.user):
-        return await interaction.response.send_message("❌ No permission.", ephemeral=True)
+        return await interaction.response.send_message("❌ No permission", ephemeral=True)
     try:
-        amount_num = parse_amount(amount)
-    except Exception:
-        return await interaction.response.send_message("❌ Invalid amount format. Try `1K`, `1M`, `1Qa`, etc.", ephemeral=True)
-
-    data["balances"][str(member.id)] = max(0, data["balances"].get(str(member.id), 0) - amount_num)
+        amt = parse_amount(amount)
+    except:
+        return await interaction.response.send_message("❌ Invalid amount", ephemeral=True)
+    data["balances"][str(member.id)] = max(0, data["balances"].get(str(member.id), 0) - amt)
     save_data()
-    await interaction.response.send_message(f"✅ Removed {format_balance(amount_num)} from {member.mention}")
+    await interaction.response.send_message(f"✅ Removed {format_balance(amt)} from {member.mention}")
 
-@tree.command(name="link_set", description="Set your link", guild=discord.Object(id=GUILD_ID))
-async def link_set(interaction: discord.Interaction, link: str):
-    data["links"][str(interaction.user.id)] = link
-    save_data()
-    await interaction.response.send_message(f"✅ Saved your link: {link}")
-
-@tree.command(name="link_get", description="Get a user's link", guild=discord.Object(id=GUILD_ID))
-async def link_get(interaction: discord.Interaction, member: discord.Member):
-    link = data["links"].get(str(member.id))
-    if not link:
-        return await interaction.response.send_message("❌ No link found.")
-    await interaction.response.send_message(f"🔗 {member.mention}'s link: {link}")
-
-@tree.command(name="username_set", description="Set your username", guild=discord.Object(id=GUILD_ID))
-async def username_set(interaction: discord.Interaction, username: str):
-    data["usernames"][str(interaction.user.id)] = username
-    save_data()
-    await interaction.response.send_message(f"✅ Username saved: {username}")
-
-@tree.command(name="username_get", description="Get a user's username", guild=discord.Object(id=GUILD_ID))
-async def username_get(interaction: discord.Interaction, member: discord.Member):
-    uname = data["usernames"].get(str(member.id))
-    if not uname:
-        return await interaction.response.send_message("❌ No username found.")
-    await interaction.response.send_message(f"👤 {member.mention}'s username: {uname}")
-
-@tree.command(name="claim", description="Claim rewards (reset invites)", guild=discord.Object(id=GUILD_ID))
-async def claim(interaction: discord.Interaction):
-    data["invites"][str(interaction.user.id)] = 0
-    save_data()
-    await interaction.response.send_message("✅ Your invites have been reset to 0.")
-
-@tree.command(name="close_ticket", description="Close the current ticket", guild=discord.Object(id=GUILD_ID))
+@tree.command(name="close_ticket", description="Close this ticket", guild=discord.Object(id=GUILD_ID))
 async def close_ticket(interaction: discord.Interaction):
     if not interaction.channel.name.startswith("ticket-"):
-        return await interaction.response.send_message("❌ This isn’t a ticket channel.", ephemeral=True)
+        return await interaction.response.send_message("❌ Not a ticket.", ephemeral=True)
     await interaction.channel.delete()
 
 # ============================
-# Events
+# EVENTS
 # ============================
 @bot.event
 async def on_ready():
@@ -266,20 +218,16 @@ async def on_ready():
     bot.add_view(TicketView())
     bot.add_view(HandleTicketView())
     await update_panel_status("🟢 Online")
-    ch = bot.get_channel(STATUS_CHANNEL_ID)
-    if ch:
-        await ch.send("🟢 Bot is **online**!")
     print(f"✅ Logged in as {bot.user}")
 
-@bot.event
-async def on_disconnect():
-    await update_panel_status("🔴 Offline")
-    ch = bot.get_channel(STATUS_CHANNEL_ID)
-    if ch:
-        await ch.send("🔴 Bot is **offline**!")
-
 # ============================
-# Run
+# SAFE START (Render-friendly)
 # ============================
-bot.run(TOKEN)
+async def start_bot():
+    keep_alive()  # keeps web thread running
+    print("⏳ Starting bot in 15s to avoid rate limits...")
+    await asyncio.sleep(15)
+    await bot.start(TOKEN)
 
+if __name__ == "__main__":
+    asyncio.run(start_bot())
