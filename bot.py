@@ -9,7 +9,7 @@ import re
 # ============================
 # CONFIG
 # ============================
-TOKEN = "MTQyMTE1NzQ2MzM1NjM0MjMzMw.G5pz3W.QpbrYjYXANG6u5UJ5_dKfi4Uoq8Uu-KCjL5Z8s"  # ⚠️ Replace this, never share your real token!
+TOKEN = ""  # ⚠️ Replace this, never share your real token!
 GUILD_ID = 1427269750576124007
 OWNER_ID = 1184517618749669510
 TICKET_CATEGORY_NAME = "tickets"
@@ -282,3 +282,4 @@ async def on_disconnect():
 # Run
 # ============================
 bot.run(TOKEN)
+
